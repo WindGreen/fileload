@@ -5,7 +5,7 @@ fileload is a golang app for downloading file with chunks, used coroutines,  pie
 
 
 
-Install
+#### Install
 
 ```
 go get -u github.com/WindGreen/fileload
@@ -13,7 +13,7 @@ go get -u github.com/WindGreen/fileload
 
 
 
-Run
+#### Run
 
 ```bash
 # version
@@ -28,3 +28,6 @@ fileload -c 10 xx.zip -s 1000000 -f xx.zip http://xxx.com/xx.zip
 fileload -v xx.zip
 ```
 
+
+
+![ScreenShot](cli.png)
