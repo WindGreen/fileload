@@ -30,4 +30,4 @@ fileload -v xx.zip
 
 
 
-![ScreenShot](cli.png)
+![ScreenShot](fileload.png)

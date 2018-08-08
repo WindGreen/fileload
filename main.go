@@ -17,12 +17,10 @@ import (
 	"time"
 )
 
-const VERSION = "1.0.0"
+const VERSION = "1.0.1"
 
-const DefaultBuff = 1000 * 1000 * 10 //10M
-
-var queue, finish chan int
-var cor, size, length int
+var queue, redo, finish chan int
+var cor, size, length, timeout int
 var hash, dst string
 var verify bool
 var version bool
@@ -30,6 +28,7 @@ var version bool
 func main() {
 	flag.IntVar(&cor, "c", 1, "coroutine num")
 	flag.IntVar(&size, "s", 0, "buff length")
+	flag.IntVar(&size, "t", 0, "timeout")
 	flag.StringVar(&dst, "f", "file", "file name")
 	flag.StringVar(&hash, "h", "sha1", "sha1 or md5 to verify the file")
 	flag.BoolVar(&verify, "v", false, "verify file, not download")
@@ -84,14 +83,20 @@ func main() {
 	}
 	fragment := int(math.Ceil(float64(length) / float64(size)))
 	queue = make(chan int, cor)
+	redo = make(chan int, int(math.Floor(float64(cor)/2)))
 	go func() {
 		for i := 0; i < fragment; i++ {
+			select {
+			case j := <-redo:
+				queue <- j
+			default:
+			}
 			queue <- i
 		}
 	}()
 	finish = make(chan int, cor)
 	for j := 0; j < cor; j++ {
-		go Do(request, fragment)
+		go Do(request, fragment, j)
 	}
 	for k := 0; k < fragment; k++ {
 		<-finish
@@ -134,16 +139,17 @@ func main() {
 	log.Printf("Time:%f\n", finishTime.Sub(startTime).Seconds())
 }
 
-func Do(request *http.Request, fragment int) {
+func Do(request *http.Request, fragment, no int) {
 	var req http.Request
 	err := DeepCopy(&req, request)
 	if err != nil {
-		log.Println(err)
+		log.Println("ERROR|prepare request:", err)
+		log.Panic(err)
 		return
 	}
 	for {
 		i := <-queue
-		log.Printf("[%d]Start download\n", i)
+		//log.Printf("[%d][%d]Start download\n",no, i)
 		start := i * size
 		var end int
 		if i < fragment-1 {
@@ -152,28 +158,38 @@ func Do(request *http.Request, fragment int) {
 			end = length - 1
 		}
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-		log.Printf("[%d]Start range:%d-%d\n", i, start, end)
-		cli := http.Client{}
+		log.Printf("[%d][%d]Start download:%d-%d\n", no, i, start, end)
+		cli := http.Client{
+			Timeout: time.Duration(timeout) * time.Second,
+		}
 		resp, err := cli.Do(&req)
 		if err != nil {
-			log.Println(err)
-			return
+			log.Printf("[%d][%d]ERROR|do request:%s\n", no, i, err.Error())
+			redo <- i
+			continue
 		}
 
 		//log.Printf("[%d]Content-Length:%s\n", i, resp.Header.Get("Content-Length"))
-		log.Printf("[%d]Content-Range:%s\n", i, resp.Header.Get("Content-Range"))
+		log.Printf("[%d][%d]Content-Range:%s\n", no, i, resp.Header.Get("Content-Range"))
 
 		file, err := os.Create(fmt.Sprintf("tmp_%d", i))
 		if err != nil {
-			log.Println(err)
-			return
+			log.Printf("[%d][%d]ERROR|create file:%s\n", no, i, err.Error())
+			file.Close()
+			resp.Body.Close()
+			redo <- i
+			continue
 		}
+		log.Printf("[%d][%d]Writing to file...\n", no, i)
 		n, err := io.Copy(file, resp.Body)
 		if err != nil {
-			log.Println(err)
-			return
+			log.Printf("[%d][%d]ERROR|write to file:%s\n", no, i, err.Error())
+			file.Close()
+			resp.Body.Close()
+			redo <- i
+			continue
 		}
-		log.Printf("[%d]Writing to file:%d\n", i, n)
+		log.Printf("[%d][%d]Wrote successfully:%d\n", no, i, n)
 
 		file.Close()
 		resp.Body.Close()
