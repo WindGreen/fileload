@@ -15,29 +15,30 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"path/filepath"
 )
 
-const VERSION = "1.0.1"
+const VERSION = "1.0.2"
 
 var queue, redo, finish chan int
 var cor, size, length, timeout int
 var hash, dst string
-var verify bool
-var version bool
+var verify, version, cache bool
 
 func main() {
 	flag.IntVar(&cor, "c", 1, "coroutine num")
-	flag.IntVar(&size, "s", 0, "buff length")
+	flag.IntVar(&size, "s", 0, "chunk size")
 	flag.IntVar(&size, "t", 0, "timeout")
-	flag.StringVar(&dst, "f", "file", "file name")
+	flag.StringVar(&dst, "f", "", "file name")
 	flag.StringVar(&hash, "h", "sha1", "sha1 or md5 to verify the file")
 	flag.BoolVar(&verify, "v", false, "verify file, not download")
+	flag.BoolVar(&cache, "cache", false, "jump if cache exist, only verify the size")
 	flag.BoolVar(&version, "version", false, "show version")
 	flag.Parse()
 
 	url := os.Args[len(os.Args)-1]
 
-	if version {
+	if version || url == "version" {
 		fmt.Println("Fileload version:", VERSION)
 		return
 	}
@@ -63,6 +64,10 @@ func main() {
 		return
 	}
 
+	if dst==""{
+		_,dst=filepath.Split(url)
+	}
+
 	startTime := time.Now()
 
 	client := http.Client{}
@@ -86,12 +91,11 @@ func main() {
 	redo = make(chan int, int(math.Floor(float64(cor)/2)))
 	go func() {
 		for i := 0; i < fragment; i++ {
-			select {
-			case j := <-redo:
-				queue <- j
-			default:
-			}
 			queue <- i
+		}
+		for {
+			j := <-redo
+			queue <- j
 		}
 	}()
 	finish = make(chan int, cor)
@@ -99,7 +103,8 @@ func main() {
 		go Do(request, fragment, j)
 	}
 	for k := 0; k < fragment; k++ {
-		<-finish
+		_ = <-finish
+		//log.Printf("[%s][%d]Finished\n", "-", i)
 	}
 	log.Println("Start to combine files...")
 
@@ -157,6 +162,18 @@ func Do(request *http.Request, fragment, no int) {
 		} else {
 			end = length - 1
 		}
+
+		filename := fmt.Sprintf("tmp_%d", i)
+		if cache {
+			filesize := int64(end - start+1)
+			file, err := os.Stat(filename)
+			if err==nil && file.Size()==filesize{
+				log.Printf("[%d][%d]Hint cached %s, size:%d\n", no, i, filename,filesize)
+				finish<-i
+				continue
+			}
+		}
+
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 		log.Printf("[%d][%d]Start download:%d-%d\n", no, i, start, end)
 		cli := http.Client{
@@ -172,18 +189,18 @@ func Do(request *http.Request, fragment, no int) {
 		//log.Printf("[%d]Content-Length:%s\n", i, resp.Header.Get("Content-Length"))
 		log.Printf("[%d][%d]Content-Range:%s\n", no, i, resp.Header.Get("Content-Range"))
 
-		file, err := os.Create(fmt.Sprintf("tmp_%d", i))
+		file, err := os.Create(filename)
 		if err != nil {
-			log.Printf("[%d][%d]ERROR|create file:%s\n", no, i, err.Error())
+			log.Printf("[%d][%d]ERROR|create file %s:%s\n", no, i, filename, err.Error())
 			file.Close()
 			resp.Body.Close()
 			redo <- i
 			continue
 		}
-		log.Printf("[%d][%d]Writing to file...\n", no, i)
+		log.Printf("[%d][%d]Writing to file %s\n", no, i, filename)
 		n, err := io.Copy(file, resp.Body)
 		if err != nil {
-			log.Printf("[%d][%d]ERROR|write to file:%s\n", no, i, err.Error())
+			log.Printf("[%d][%d]ERROR|write to file %s:%s\n", no, i, filename, err.Error())
 			file.Close()
 			resp.Body.Close()
 			redo <- i
@@ -194,7 +211,7 @@ func Do(request *http.Request, fragment, no int) {
 		file.Close()
 		resp.Body.Close()
 
-		finish <- 1
+		finish <- i
 	}
 }
 
