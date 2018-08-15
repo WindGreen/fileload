@@ -13,12 +13,12 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
-	"path/filepath"
 )
 
-const VERSION = "1.0.2"
+const VERSION = "1.0.3"
 
 var queue, redo, finish chan int
 var cor, size, length, timeout int
@@ -64,8 +64,8 @@ func main() {
 		return
 	}
 
-	if dst==""{
-		_,dst=filepath.Split(url)
+	if dst == "" {
+		_, dst = filepath.Split(url)
 	}
 
 	startTime := time.Now()
@@ -116,7 +116,7 @@ func main() {
 	defer file.Close()
 	var offset int64 = 0
 	for x := 0; x < fragment; x++ {
-		filename := fmt.Sprintf("tmp_%d", x)
+		filename := fmt.Sprintf("%s_%d", dst, x)
 		buf, err := ioutil.ReadFile(filename)
 		if err != nil {
 			log.Println(err)
@@ -141,7 +141,8 @@ func main() {
 	}
 
 	finishTime := time.Now()
-	log.Printf("Time:%f\n", finishTime.Sub(startTime).Seconds())
+	duration := finishTime.Sub(startTime).Seconds()
+	log.Printf("Time:%f Speed:%f Kb/s\n", duration, float64(length)/duration/1024)
 }
 
 func Do(request *http.Request, fragment, no int) {
@@ -153,6 +154,8 @@ func Do(request *http.Request, fragment, no int) {
 		return
 	}
 	for {
+		cStartTime := time.Now()
+
 		i := <-queue
 		//log.Printf("[%d][%d]Start download\n",no, i)
 		start := i * size
@@ -163,13 +166,13 @@ func Do(request *http.Request, fragment, no int) {
 			end = length - 1
 		}
 
-		filename := fmt.Sprintf("tmp_%d", i)
+		filename := fmt.Sprintf("%s_%d", dst, i)
 		if cache {
-			filesize := int64(end - start+1)
+			filesize := int64(end - start + 1)
 			file, err := os.Stat(filename)
-			if err==nil && file.Size()==filesize{
-				log.Printf("[%d][%d]Hint cached %s, size:%d\n", no, i, filename,filesize)
-				finish<-i
+			if err == nil && file.Size() == filesize {
+				log.Printf("[%d][%d]Hint cached %s, size:%d\n", no, i, filename, filesize)
+				finish <- i
 				continue
 			}
 		}
@@ -206,7 +209,9 @@ func Do(request *http.Request, fragment, no int) {
 			redo <- i
 			continue
 		}
-		log.Printf("[%d][%d]Wrote successfully:%d\n", no, i, n)
+		cEndTime := time.Now()
+		duration := cEndTime.Sub(cStartTime).Seconds()
+		log.Printf("[%d][%d]Download successfully:%f Kb/s\n", no, i, float64(n)/duration/1024)
 
 		file.Close()
 		resp.Body.Close()
